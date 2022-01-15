@@ -39,7 +39,6 @@ func TestServer(t *testing.T) {
 				Suggestions:            []dal.Car{},
 			},
 		},
-
 		{
 			name: "MakeModelBudgetOnly",
 			path: "/cars?make=Ford&model=Van&budget=40000",
@@ -117,6 +116,60 @@ func TestServer(t *testing.T) {
 
 			if reflect.DeepEqual(carResp, tc.expected) {
 				t.Errorf("Expected: %v, Got: %v", tc.expected, carResp)
+			}
+
+		})
+	}
+}
+
+func TestErrorMessages(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected string
+	}{
+		{
+			name:     "Negative year",
+			path:     "/cars?make=Ford&model=Van&budget=40000&year=-1",
+			expected: "year must be a positive number: -1",
+		},
+		{
+			name:     "Negative budget value",
+			path:     "/cars?make=Ford&model=Van&budget=-40000&year=-1",
+			expected: "budget must be a positive number: -40000",
+		},
+		{
+			name: "Alphanumeric budget value",
+			path: "/cars?make=Ford&model=Van&budget=d3&year=2018",
+			// TODO: Need to properly handle this error message
+			expected: `strconv.ParseFloat: parsing "d3": invalid syntax`,
+		},
+	}
+
+	server := newHTTPServer()
+	r := mux.NewRouter()
+	r.HandleFunc("/cars", server.GetCars).Methods(http.MethodGet)
+
+	ts := httptest.NewServer(r)
+
+	defer ts.Close()
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+
+			resp, err := http.Get(ts.URL + tc.path)
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			respBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if string(respBody) != tc.expected {
+				t.Errorf("Expected: %v, Got: %v", tc.expected, string(respBody))
 			}
 
 		})

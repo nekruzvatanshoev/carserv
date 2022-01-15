@@ -1,5 +1,6 @@
 package dal
 
+// CarsDataset is an in-memory dataset
 var CarsDataset = []Car{
 
 	{
