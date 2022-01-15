@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -88,7 +87,7 @@ func validateBudget(w http.ResponseWriter, vars url.Values) (float32, error) {
 			w.Write([]byte(err.Error()))
 			return 0.0, err
 		}
-		if budgetDecimal < 0 {
+		if budgetDecimal < 0.0 {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(fmt.Sprintf("budget must be a positive number: %v", budgetDecimal)))
 			return 0.0, errors.New("budget must be a positive number")
@@ -102,6 +101,7 @@ func validateBudget(w http.ResponseWriter, vars url.Values) (float32, error) {
 func validateMakeName(w http.ResponseWriter, vars url.Values) (string, error) {
 	makeName := vars.Get("make")
 	if makeName != "" {
+		// TODO: Add better validation for non alphanumeric values
 		return makeName, nil
 	}
 	return "", nil
@@ -110,12 +110,14 @@ func validateMakeName(w http.ResponseWriter, vars url.Values) (string, error) {
 func validateModelName(w http.ResponseWriter, vars url.Values) (string, error) {
 	modelName := vars.Get("model")
 	if modelName != "" {
+		// TODO: Add better validation for non alphanumeric values
 		return modelName, nil
 	}
 	return "", nil
 }
 
 func processor(car dal.Car) dal.CarResponse {
+	// TODO: Add timeouts at the top to timeout if the requests takes too long to process
 
 	generator := func(done <-chan interface{}, size int) <-chan int {
 		intStream := make(chan int)
@@ -161,6 +163,7 @@ func processor(car dal.Car) dal.CarResponse {
 		if makeName == "" {
 			return intStream
 		}
+
 		filterMakeStream := make(chan int)
 		go func() {
 			defer close(filterMakeStream)
@@ -168,7 +171,7 @@ func processor(car dal.Car) dal.CarResponse {
 				select {
 				case <-done:
 				default:
-					if makeMatch(i, car.Make) {
+					if makeMatch(i, makeName) {
 						filterMakeStream <- i
 					}
 				}
@@ -181,6 +184,7 @@ func processor(car dal.Car) dal.CarResponse {
 		if modelName == "" {
 			return intStream
 		}
+
 		filterModelName := make(chan int)
 		go func() {
 			defer close(filterModelName)
@@ -188,7 +192,7 @@ func processor(car dal.Car) dal.CarResponse {
 				select {
 				case <-done:
 				default:
-					if modelMatch(i, car.Model) {
+					if modelMatch(i, modelName) {
 						filterModelName <- i
 					}
 
@@ -199,9 +203,10 @@ func processor(car dal.Car) dal.CarResponse {
 	}
 
 	filterBudget := func(done <-chan interface{}, intStream <-chan int, budget float32) <-chan int {
-		if budget <= 0 {
+		if budget <= 0.0 {
 			return intStream
 		}
+
 		filterBudgetAmount := make(chan int)
 		go func() {
 			defer close(filterBudgetAmount)
@@ -209,7 +214,7 @@ func processor(car dal.Car) dal.CarResponse {
 				select {
 				case <-done:
 				default:
-					if budgetMatch(i, car.Price) {
+					if budgetMatch(i, budget) {
 						filterBudgetAmount <- i
 					}
 
@@ -219,12 +224,16 @@ func processor(car dal.Car) dal.CarResponse {
 		return filterBudgetAmount
 	}
 
-	filterDistinctMake := func(done <-chan interface{}, size int, cars []dal.Car) <-chan int {
+	filterDistinctMake := func(done <-chan interface{}, intStream <-chan int, cars []dal.Car) <-chan int {
+		if len(cars) == 0 {
+			return intStream
+		}
+
 		brands := make(map[string]int)
 		filterDistinctMakeStream := make(chan int)
 		go func() {
 			defer close(filterDistinctMakeStream)
-			for i := 0; i < size; i++ {
+			for i := range intStream {
 				select {
 				case <-done:
 				default:
@@ -254,112 +263,68 @@ func processor(car dal.Car) dal.CarResponse {
 		return takeStream
 	}
 
-	// filterYear := func(done <-chan interface{}, intStream <-chan int, year int) <-chan int {
-	// 	if year == 0 {
-	// 		return intStream
-	// 	}
-	// 	filterYear := make(chan int)
-	// 	go func() {
-	// 		defer close(filterYear)
-	// 		for i := range intStream {
-	// 			select {
-	// 			case <-done:
-	// 			default:
-	// 				if dal.CarsDataset[i].Year == year {
-	// 					filterYear <- i
-	// 				}
-
-	// 			}
-	// 		}
-	// 	}()
-	// 	return filterYear
-	// }
-
-	done := make(chan interface{})
-
-	dbSize := len(dal.CarsDataset)
-	intStream := generator(done, dbSize)
-
-	var totalVehicles int
-
-	pipelines := filterAll(done, intStream, car)
-	for v := range pipelines {
+	/* TODO: Possible solution
+	 for v := range filterYear(done, filterBudget(done, filterMake(done, filterModel(done, generator(done, dbSize), car.Model), car.Make), car.Price), car.Year) {
 		val := dal.CarsDataset[v]
 		log.Println(val)
+		// rest of the code
+	 }
+	*/
+	_ = func(done <-chan interface{}, intStream <-chan int, year int) <-chan int {
+		if year <= 0 {
+			return intStream
+		}
+		filterYear := make(chan int)
+		go func() {
+			defer close(filterYear)
+			for i := range intStream {
+				select {
+				case <-done:
+				default:
+					if yearMatch(i, year) {
+						filterYear <- i
+					}
+
+				}
+			}
+		}()
+		return filterYear
+	}
+
+	done := make(chan interface{})
+	dbSize := len(dal.CarsDataset)
+
+	var totalVehicles int
+	var vehiclePricesCar []dal.Car
+	var totalVehiclesMakeModel int
+
+	// Total Number of vehicles available that matches the faceted search parameters (Our OR operations)
+	for v := range filterAll(done, generator(done, dbSize), car) {
+		val := dal.CarsDataset[v]
 		totalVehicles += val.VehicleCount
 	}
 
-	var vehiclePricesCar []dal.Car
-	if car.Price != 0.0 {
-		intStream2 := generator(done, dbSize)
-		pipelines2 := filterBudget(done, intStream2, car.Price)
-
-		for v := range pipelines2 {
-			val := dal.CarsDataset[v]
-
-			vehiclePricesCar = append(vehiclePricesCar, val)
-		}
-
+	// Lowest, Median, and Highest Price of the vehicle that matches the price
+	for v := range filterBudget(done, generator(done, dbSize), car.Price) {
+		val := dal.CarsDataset[v]
+		vehiclePricesCar = append(vehiclePricesCar, val)
 	}
 
 	resp := findStatsStruct(vehiclePricesCar)
 	resp.TotalVehicles = totalVehicles
 
-	resultSorted := MergeSort(vehiclePricesCar)
-
-	//takeTop5DistinctCars := take(done, filterDistinctMake(done, len(resultSorted), resultSorted), 5)
-
-	if len(resultSorted) != 0 {
-		for num := range take(done, filterDistinctMake(done, len(resultSorted), resultSorted), 5) {
-			resp.Suggestions = append(resp.Suggestions, resultSorted[num])
-		}
-	}
-
-	// pipelines2 := filterYear(done, filterBudget(done, filterModel(done, filterMake(done, intStream, car.Make), car.Model), car.Price), car.Year)
-
-	// var cars []dal.Car
-	// var totalVehicles int
-	// var vehiclePrices []float32
-	// log.Println()
-	// for v := range pipelines2 {
-	// 	val := dal.CarsDataset[v]
-	// 	log.Println(val)
-	// 	cars = append(cars, val)
-	// 	totalVehicles += val.VehicleCount
-	// 	vehiclePrices = append(vehiclePrices, val.Price)
-	// }
-
-	// log.Println(totalVehicles)
-	// log.Println(vehiclePrices)
-
-	// resp := findStats(vehiclePrices)
-	// resp.TotalVehicles = totalVehicles
-	// log.Println(MergeSort(vehiclePrices)
-
-	intStream3 := generator(done, dbSize)
-	pipelines3 := filterModel(done, filterMake(done, intStream3, car.Make), car.Model)
-
-	var totalVehiclesMakeModel int
-	for v := range pipelines3 {
+	// Number of vehicles matched by Make and Model combination as a sub-group of Total Number
+	for v := range filterModel(done, filterMake(done, generator(done, dbSize), car.Make), car.Model) {
 		val := dal.CarsDataset[v]
-
-		// cars = append(cars, val)
 		totalVehiclesMakeModel += val.VehicleCount
 	}
 
 	resp.MakeModelTotalVehicles = totalVehiclesMakeModel
 
-	var totalCarsCount int
-	for i, v := range dal.CarsDataset {
-		if makeMatch(i, car.Make) {
-			totalCarsCount += v.VehicleCount
-		} else if modelMatch(i, car.Model) {
-			totalCarsCount += v.VehicleCount
-		} else if budgetMatch(i, car.Price) {
-			totalCarsCount += v.VehicleCount
-		} else if yearMatch(i, car.Year) {
-			totalCarsCount += v.VehicleCount
-		}
+	resultSorted := mergeSort(vehiclePricesCar)
+	// 5 Suggested vehicles that are within a given budget.
+	for num := range take(done, filterDistinctMake(done, generator(done, dbSize), resultSorted), 5) {
+		resp.Suggestions = append(resp.Suggestions, resultSorted[num])
 	}
 
 	return resp
@@ -376,31 +341,31 @@ func modelMatch(index int, modelName string) bool {
 func budgetMatch(index int, budget float32) bool {
 	above := budget * 1.10
 	below := budget * 0.9
-	return budget <= 0.0 && dal.CarsDataset[index].Price < above && dal.CarsDataset[index].Price > below
+	return budget > 0.0 && dal.CarsDataset[index].Price < above && dal.CarsDataset[index].Price > below
 }
 
 func yearMatch(index, year int) bool {
-	return year <= 0 && dal.CarsDataset[index].Year == year
+	return year > 0 && dal.CarsDataset[index].Year == year
 }
 
 func findStatsStruct(carPrices []dal.Car) dal.CarResponse {
 	if len(carPrices) == 0 {
 		return dal.CarResponse{Lowest: 0, Median: 0, Highest: 0}
 	}
-	result := MergeSort(carPrices)
+	result := mergeSort(carPrices)
 	length := len(carPrices)
 	median := length / 2
 	return dal.CarResponse{Lowest: result[0].Price, Median: result[median].Price, Highest: result[length-1].Price}
 }
 
-func MergeSort(arrCar []dal.Car) []dal.Car {
+func mergeSort(arrCar []dal.Car) []dal.Car {
 	if len(arrCar) <= 1 {
 		return arrCar
 	}
 
 	middle := len(arrCar) / 2
-	left := MergeSort(arrCar[:middle])
-	right := MergeSort(arrCar[middle:])
+	left := mergeSort(arrCar[:middle])
+	right := mergeSort(arrCar[middle:])
 	return merge(left, right)
 }
 
